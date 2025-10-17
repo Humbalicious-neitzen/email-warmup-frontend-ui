@@ -16,18 +16,6 @@ export default defineConfig({
   },
   
   // FIX 3: Prevents conflicts by making Firebase dependencies external
-  build: {
-    outDir: 'dist',
-    rollupOptions: {
-      // Treat firebase libraries as external, preventing bundling conflicts
-      external: [
-        'firebase/app', 
-        'firebase/auth', 
-        'firebase/firestore'
-      ],
-      input: {
-        main: './index.html', 
-      },
-    },
+
   },
 });
