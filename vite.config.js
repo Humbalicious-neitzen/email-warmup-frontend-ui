@@ -4,10 +4,12 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  // 1. Ensures Vite starts looking in the current directory (the root)
+  // CRITICAL FIX 1: Ensures assets are loaded relative to the current directory (fixes blank page)
+  base: './', 
+  
   root: '.', 
   
-  // 2. CRITICAL FIX: Tells Vite where to find files with the .jsx extension
+  // FIX 2: Added to handle the resolution of .jsx files
   resolve: {
     extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.node'],
   },
@@ -16,10 +18,8 @@ export default defineConfig({
     outDir: 'dist', 
     rollupOptions: {
       input: {
-        // Defines the HTML entry point
         main: './index.html', 
       },
     },
   },
-  base: '/',
 });
