@@ -1,747 +1,650 @@
-import React, { useState, useEffect, useCallback } from 'react';
-// Lucide icons are essential for a modern look
-import { Home, Mail, Activity, LogOut, Menu, X, User, Zap, Info } from 'lucide-react';
-
-// --- 1. FIREBASE SETUP (REQUIRED FOR AUTH AND STATE PERSISTENCE) ---
+import React, { useState, useEffect, useContext, createContext } from 'react';
+import { Home, Mail, Activity, LogOut, Menu, X, User, Zap, Settings, RefreshCw, CheckCircle, AlertTriangle, Cloud, Loader2 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged,
-  signOut
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  doc, 
-  setDoc, 
-  collection, 
-  query, 
-  onSnapshot, 
-  orderBy 
-} from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, onSnapshot, collection, query, setDoc } from 'firebase/firestore';
 
-// Mock global variables assumed to be provided by the environment
+// --- GLOBAL VARIABLES (Provided by Canvas Environment) ---
+// These variables must remain global for the app to initialize.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-warmup-app';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-warmup-app';
 
-// Initialize Firebase services
-let app, db, auth;
-if (Object.keys(firebaseConfig).length > 0) {
-    try {
-        app = initializeApp(firebaseConfig);
-        db = getFirestore(app);
-        auth = getAuth(app);
-    } catch (e) {
-        console.error("Firebase Initialization Error:", e);
-    }
-}
+// --- FIREBASE INITIALIZATION AND AUTH CONTEXT ---
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
 
-// Custom type definitions
-interface EmailAccount {
-  id: string;
-  email: string;
-  status: 'Connecting' | 'Active' | 'Paused' | 'Error';
-  sentCount: number;
-  receivedCount: number;
-  lastConnected: Date;
-}
-
-// --- 2. AUTH CONTEXT/HOOK (Simplified to handle Canvas Auth) ---
-const AuthContext = React.createContext(null);
+const AuthContext = createContext({
+  user: null,
+  userId: null,
+  isAuthReady: false,
+  logout: () => {},
+});
 
 const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   useEffect(() => {
-    if (!auth) {
-        console.error("Auth object is null. Cannot proceed with authentication.");
-        setIsAuthReady(true);
-        setUserId(crypto.randomUUID()); // Fallback user ID
-        return;
-    }
-
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-        if (currentUser) {
-            setUser(currentUser);
-            setUserId(currentUser.uid);
-        } else {
-            // Use custom token if provided, otherwise sign in anonymously
-            try {
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Authentication failed:", error);
-                setUserId(crypto.randomUUID()); // Fallback user ID on error
-            }
+      if (currentUser) {
+        setUser(currentUser);
+        setUserId(currentUser.uid);
+      } else {
+        // Sign in anonymously if no token is available or needed
+        try {
+          await signInAnonymously(auth);
+        } catch (error) {
+          console.error("Error signing in anonymously:", error);
         }
-        setIsAuthReady(true);
+      }
+      setIsAuthReady(true);
     });
+
+    if (initialAuthToken) {
+      signInWithCustomToken(auth, initialAuthToken)
+        .catch(error => {
+          console.error("Error signing in with custom token:", error);
+          // If token fails, fall back to anonymous sign-in, which onAuthStateChanged will handle
+        });
+    }
 
     return () => unsubscribe();
   }, []);
 
-  const logout = useCallback(() => {
-    if (auth) {
-        signOut(auth).catch(e => console.error("Logout failed:", e));
-    }
-  }, []);
+  const logout = () => {
+    // In a real app, implement proper sign out
+    console.log("Logout triggered. In a live app, this signs out the user.");
+  };
 
   return (
-    <AuthContext.Provider value={{ user, userId, isAuthReady, logout, db, auth }}>
+    <AuthContext.Provider value={{ user, userId, isAuthReady, logout }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-const useAuth = () => React.useContext(AuthContext);
+const useAuth = () => useContext(AuthContext);
 
-// --- 3. UI COMPONENTS ---
+// --- APP DATA STRUCTURES ---
 
-// Helper for navigation links
-const NavLink = ({ name, href, icon: Icon, isCurrent, onClick }) => (
-  <div
-    className={`flex items-center px-4 py-3 rounded-xl cursor-pointer transition-colors duration-150 ${
-      isCurrent
-        ? 'bg-blue-600 text-white shadow-lg'
-        : 'text-gray-600 hover:bg-gray-200 hover:text-gray-800'
-    }`}
-    onClick={onClick}
-  >
-    <Icon className={`h-5 w-5 ${isCurrent ? 'text-white' : 'text-blue-500'}`} aria-hidden="true" />
-    <span className="ml-3 font-medium">{name}</span>
+const STATUS_MAP = {
+  active: { text: 'Active', color: 'bg-green-100 text-green-700' },
+  paused: { text: 'Paused', color: 'bg-yellow-100 text-yellow-700' },
+  error: { text: 'Error', color: 'bg-red-100 text-red-700' },
+};
+
+// --- GENERAL COMPONENTS ---
+
+const Card = ({ children, title, className = '' }) => (
+  <div className={`bg-white shadow-xl rounded-xl p-4 sm:p-6 ${className}`}>
+    {title && <h2 className="text-xl font-bold text-gray-800 mb-4">{title}</h2>}
+    {children}
   </div>
 );
 
-// Main Layout Component
-const Layout = ({ children, currentPage, setCurrentPage, navigation, logout }) => {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { userId } = useAuth();
+const Button = ({ children, onClick, disabled = false, loading = false, variant = 'primary', className = '' }) => {
+  const baseStyle = "px-4 py-2 font-semibold rounded-lg transition duration-150 ease-in-out flex items-center justify-center";
+  const variants = {
+    primary: "bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-500/50",
+    secondary: "bg-gray-200 text-gray-700 hover:bg-gray-300 focus:ring-4 focus:ring-gray-400/50",
+    danger: "bg-red-600 text-white hover:bg-red-700 focus:ring-4 focus:ring-red-500/50",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      className={`${baseStyle} ${variants[variant]} ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
+    >
+      {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+      {children}
+    </button>
+  );
+};
+
+const Input = ({ label, id, type = 'text', value, onChange, placeholder = '', required = false }) => (
+  <div className="space-y-1">
+    {label && (
+      <label htmlFor={id} className="block text-sm font-medium text-gray-700">
+        {label}
+      </label>
+    )}
+    <input
+      type={type}
+      id={id}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      required={required}
+      className="mt-1 block w-full rounded-lg border border-gray-300 p-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm transition"
+    />
+  </div>
+);
+
+// --- PAGE COMPONENTS ---
+
+const DashboardPage = () => {
+  const { userId, isAuthReady } = useAuth();
+  const [stats, setStats] = useState({ totalAccounts: 0, activeWarmup: 0, deliverabilityScore: 'N/A' });
+  const [logs, setLogs] = useState([]);
+
+  useEffect(() => {
+    if (!isAuthReady || !userId) return;
+
+    // Simulate real-time stats fetching (this is where API calls or Firestore listeners would go)
+    const statsRef = doc(db, 'artifacts', appId, 'users', userId, 'dashboard', 'stats');
+    const logsRef = collection(db, 'artifacts', appId, 'users', userId, 'logs');
+    const logsQuery = query(logsRef); // In a real app, you would add limits/sorting here
+
+    const unsubscribeStats = onSnapshot(statsRef, (doc) => {
+      if (doc.exists()) {
+        setStats(doc.data());
+      } else {
+        // Initialize if not exists
+        setStats({ totalAccounts: 0, activeWarmup: 0, deliverabilityScore: 'N/A' });
+        setDoc(statsRef, { totalAccounts: 0, activeWarmup: 0, deliverabilityScore: 'N/A' }, { merge: true });
+      }
+    });
+
+    const unsubscribeLogs = onSnapshot(logsQuery, (snapshot) => {
+      const logData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort by timestamp descending (simulated timestamp for simplicity)
+      logData.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      setLogs(logData.slice(0, 10)); // Show top 10 logs
+    });
+
+    return () => {
+      unsubscribeStats();
+      unsubscribeLogs();
+    };
+  }, [userId, isAuthReady]);
+
+  const statCards = [
+    { title: 'Total Accounts', value: stats.totalAccounts, icon: Mail, color: 'bg-indigo-500' },
+    { title: 'Active Warmups', value: stats.activeWarmup, icon: Activity, color: 'bg-green-500' },
+    { title: 'Avg. Deliverability', value: stats.deliverabilityScore, icon: CheckCircle, color: 'bg-yellow-500' },
+  ];
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Static sidebar for desktop */}
-      <div className="hidden lg:flex lg:flex-shrink-0">
-        <div className="flex flex-col w-64 bg-white border-r border-gray-200 shadow-xl">
-          <div className="flex items-center justify-center h-20 bg-blue-700 p-4">
-            <h1 className="text-2xl font-black text-white flex items-center">
-                <Zap className="h-6 w-6 mr-2" />
-                WarmUp AI
-            </h1>
+    <div className="space-y-6 p-4 md:p-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {statCards.map((card, index) => (
+          <Card key={index} className="flex items-center space-x-4">
+            <div className={`p-3 rounded-full ${card.color} text-white`}>
+              <card.icon className="h-6 w-6" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-500">{card.title}</p>
+              <p className="text-2xl font-bold text-gray-900">{card.value}</p>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <Card title="Latest Warmup Activity Log">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Timestamp
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Event
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Account
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {logs.length > 0 ? logs.map((log) => (
+                <tr key={log.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {new Date(log.timestamp).toLocaleTimeString()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{log.event}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{log.email}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${log.status === 'success' ? STATUS_MAP.active.color : STATUS_MAP.error.color}`}>
+                      {log.status}
+                    </span>
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan="4" className="px-6 py-4 text-center text-sm text-gray-500">
+                    No recent warmup activity yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+const EmailManagementPage = () => {
+  const { userId, isAuthReady } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [backendUrl, setBackendUrl] = useState('https://email-warmup-tool.onrender.com'); // Default to the live Render backend
+  const [message, setMessage] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+
+  const accountCollectionPath = doc(db, 'artifacts', appId, 'users', userId, 'emailAccounts', 'list');
+
+  useEffect(() => {
+    if (!isAuthReady || !userId) return;
+
+    // Listener for real-time updates to email accounts
+    const unsubscribe = onSnapshot(accountCollectionPath, (doc) => {
+      if (doc.exists()) {
+        setAccounts(doc.data().emails || []);
+      } else {
+        setAccounts([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [userId, isAuthReady]);
+
+  const handleConnect = async (e) => {
+    e.preventDefault();
+    if (!userId || !backendUrl) {
+      setMessage({ type: 'error', text: 'Backend URL or User ID is missing.' });
+      return;
+    }
+
+    setIsLoading(true);
+    setMessage(null);
+
+    // 1. Simulate API call to the live Render backend
+    try {
+      const response = await fetch(`${backendUrl}/api/emails/connect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password, userId }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        // 2. If API call is successful, save the mock account data to Firestore
+        const newAccount = {
+          email,
+          status: 'active',
+          volume: 10,
+          joined: Date.now(),
+          lastSync: Date.now(),
+        };
+
+        const currentAccounts = accounts.length > 0 ? accounts : [];
+
+        await setDoc(accountCollectionPath, {
+          emails: [...currentAccounts, newAccount],
+        }, { merge: true });
+
+        setMessage({ type: 'success', text: `Successfully connected: ${email}. Warmup started.` });
+        setEmail('');
+        setPassword('');
+
+        // Simulate logging the event to the dashboard log
+        await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'logs', Date.now().toString()), {
+          timestamp: Date.now(),
+          event: 'Account Connected',
+          email: email,
+          status: 'success',
+        }, { merge: true });
+
+      } else {
+        // Handle API error response
+        setMessage({ type: 'error', text: data.message || 'API connection failed. Check credentials.' });
+      }
+    } catch (error) {
+      console.error('Connection Error:', error);
+      setMessage({ type: 'error', text: `Could not reach API: ${error.message}. Check your URL.` });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRemove = async (targetEmail) => {
+    if (!userId) return;
+
+    const updatedAccounts = accounts.filter(acc => acc.email !== targetEmail);
+
+    try {
+      await setDoc(accountCollectionPath, { emails: updatedAccounts }, { merge: true });
+      setMessage({ type: 'success', text: `${targetEmail} removed successfully.` });
+
+      // Simulate logging the event
+      await setDoc(doc(db, 'artifacts', appId, 'users', userId, 'logs', Date.now().toString()), {
+        timestamp: Date.now(),
+        event: 'Account Removed',
+        email: targetEmail,
+        status: 'warning',
+      }, { merge: true });
+      
+    } catch (error) {
+      console.error("Remove Error:", error);
+      setMessage({ type: 'error', text: 'Failed to remove account.' });
+    }
+  };
+
+  return (
+    <div className="space-y-6 p-4 md:p-8">
+      <h1 className="text-3xl font-bold text-gray-900">Email Account Management</h1>
+
+      {/* Backend URL Input */}
+      <Card title="Backend API Configuration (Render)" className="border border-indigo-200">
+        <Input
+          label="Backend API URL"
+          id="backend-url"
+          value={backendUrl}
+          onChange={(e) => setBackendUrl(e.target.value)}
+          placeholder="e.g., https://your-warmup-api.onrender.com"
+        />
+        <p className="mt-2 text-xs text-gray-500 flex items-center">
+            <Cloud className="h-4 w-4 mr-1 text-indigo-500" />
+            Your live backend is hosted on Render. Ensure the URL is correct to enable warmup.
+        </p>
+      </Card>
+
+      {/* Connection Form */}
+      <Card title="Connect New Email Account">
+        {message && (
+          <div className={`p-3 mb-4 rounded-lg flex items-center text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            {message.type === 'success' ? <CheckCircle className="h-5 w-5 mr-2" /> : <AlertTriangle className="h-5 w-5 mr-2" />}
+            {message.text}
           </div>
-          <div className="flex-1 flex flex-col overflow-y-auto p-4 space-y-2">
-            <nav className="flex-1 space-y-2">
+        )}
+        <form onSubmit={handleConnect} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <Input
+            label="Email Address (SMTP/IMAP)"
+            id="email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="e.g., marketing@yourdomain.com"
+            required
+          />
+          <Input
+            label="App Password / Token"
+            id="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="This is stored securely by the API"
+            required
+          />
+          <Button type="submit" loading={isLoading} disabled={!email || !password || !backendUrl} className="w-full md:w-auto">
+            {isLoading ? 'Connecting...' : 'Connect Account via API'}
+          </Button>
+        </form>
+      </Card>
+
+      {/* Existing Accounts Table */}
+      <Card title="Existing Warmup Accounts">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Email
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Status
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Daily Volume
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {accounts.length > 0 ? accounts.map((account) => (
+                <tr key={account.email} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{account.email}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${STATUS_MAP[account.status]?.color}`}>
+                      {STATUS_MAP[account.status]?.text}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{account.volume}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                    <Button variant="secondary" className="p-2 h-auto text-xs" onClick={() => console.log('Pause Warmup')}>
+                      <Zap className="h-4 w-4 mr-1" /> Pause
+                    </Button>
+                    <Button variant="danger" className="p-2 h-auto text-xs" onClick={() => handleRemove(account.email)}>
+                      <X className="h-4 w-4 mr-1" /> Remove
+                    </Button>
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan="4" className="px-6 py-4 text-center text-sm text-gray-500">
+                    No email accounts are currently connected.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <p className="mt-4 text-xs text-gray-500">User ID for troubleshooting: {userId}</p>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+const WarmupControlPage = () => (
+  <div className="p-4 md:p-8 space-y-6">
+    <h1 className="text-3xl font-bold text-gray-900">Warmup Control & Strategy</h1>
+    <Card title="Global Warmup Settings">
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Configure the automated ramp-up schedule and engagement rules across all connected accounts.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Input label="Max Daily Emails (Per Account)" id="max-daily" type="number" placeholder="50" />
+          <Input label="Daily Volume Increase (%)" id="daily-increase" type="number" placeholder="10" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Input label="Target Reply Rate (%)" id="target-reply" type="number" placeholder="15" />
+          <Input label="Warmup Duration (Days)" id="warmup-days" type="number" placeholder="30" />
+        </div>
+        <Button variant="primary">
+          <Settings className="h-4 w-4 mr-2" /> Save Global Settings
+        </Button>
+      </div>
+    </Card>
+
+    <Card title="Engagement Simulation Rules">
+      <ul className="text-sm text-gray-600 space-y-2 list-disc list-inside">
+        <li>Automatically move emails from **Spam** to **Primary Inbox** upon arrival.</li>
+        <li>Simulate **human-like replies** to warm-up emails within 3 hours.</li>
+        <li>Mark warm-up emails as **Important** to improve sender reputation.</li>
+        <li>Monitor DNS records (SPF, DKIM, DMARC) for authentication issues.</li>
+      </ul>
+      <Button variant="secondary" className="mt-4">
+        <RefreshCw className="h-4 w-4 mr-2" /> View Detailed Diagnostics
+      </Button>
+    </Card>
+  </div>
+);
+
+// --- MAIN LAYOUT & ROUTING ---
+
+const Layout = ({ children, currentPage, setCurrentPage }) => {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { user, logout } = useAuth();
+  const userId = user?.uid;
+
+  const navigation = [
+    { name: 'Dashboard', href: 'dashboard', icon: Home },
+    { name: 'Email Management', href: 'emails', icon: Mail },
+    { name: 'Warmup Control', href: 'warmup', icon: Activity },
+  ];
+
+  const NavLink = ({ item }) => (
+    <a
+      href="#"
+      onClick={(e) => {
+        e.preventDefault();
+        setCurrentPage(item.href);
+        setSidebarOpen(false);
+      }}
+      className={`group flex items-center px-2 py-3 text-base font-medium rounded-lg transition duration-150 ease-in-out ${
+        currentPage === item.href
+          ? 'bg-indigo-700 text-white shadow-lg'
+          : 'text-indigo-100 hover:bg-indigo-600 hover:text-white'
+      }`}
+    >
+      <item.icon className={`mr-4 h-6 w-6 transition duration-150 ${currentPage === item.href ? 'text-white' : 'text-indigo-200 group-hover:text-white'}`} aria-hidden="true" />
+      {item.name}
+    </a>
+  );
+
+  return (
+    <div className="min-h-screen flex">
+      {/* Mobile sidebar */}
+      <div className={`fixed inset-0 z-40 lg:hidden ${sidebarOpen ? 'block' : 'hidden'}`}>
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75" onClick={() => setSidebarOpen(false)} />
+        <div className="relative flex-1 flex flex-col max-w-xs w-full bg-indigo-800">
+          <div className="absolute top-0 right-0 -mr-12 pt-2">
+            <button
+              className="ml-1 flex items-center justify-center h-10 w-10 rounded-full focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <span className="sr-only">Close sidebar</span>
+              <X className="h-6 w-6 text-white" aria-hidden="true" />
+            </button>
+          </div>
+          <div className="flex-1 h-0 pt-5 pb-4 overflow-y-auto">
+            <div className="flex-shrink-0 flex items-center px-4">
+              <Zap className="h-8 w-8 text-white" />
+              <span className="text-xl font-bold text-white ml-2">Warmup AI</span>
+            </div>
+            <nav className="mt-5 px-2 space-y-1">
               {navigation.map((item) => (
-                <NavLink
-                  key={item.name}
-                  name={item.name}
-                  href={item.href}
-                  icon={item.icon}
-                  isCurrent={currentPage === item.href}
-                  onClick={() => setCurrentPage(item.href)}
-                />
+                <NavLink key={item.name} item={item} />
               ))}
             </nav>
-            
-            <div className="pt-4 border-t border-gray-200">
-                {userId && (
-                     <div className="text-xs text-gray-500 mb-2 p-2 break-all bg-gray-100 rounded-lg">
-                        User ID: <span className="font-mono text-gray-700">{userId}</span>
-                    </div>
-                )}
-                <NavLink
-                    name="Log Out"
-                    href="#"
-                    icon={LogOut}
-                    isCurrent={false}
-                    onClick={logout}
-                />
+          </div>
+          <div className="flex-shrink-0 flex border-t border-indigo-700 p-4">
+            <div className="flex items-center">
+              <div className="ml-3">
+                <p className="text-sm font-medium text-white">User: {userId ? userId.substring(0, 8) + '...' : 'Guest'}</p>
+                <button onClick={logout} className="text-xs font-medium text-indigo-200 hover:text-white">
+                  <LogOut className="h-4 w-4 inline mr-1" /> Sign Out
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="absolute inset-0 bg-gray-600 opacity-75" onClick={() => setSidebarOpen(false)} />
-          <div className="relative flex flex-col w-64 h-full bg-white shadow-xl">
-            <div className="flex items-center justify-between h-20 p-4 bg-blue-700">
-                <h1 className="text-xl font-black text-white flex items-center">
-                    <Zap className="h-5 w-5 mr-2" />
-                    WarmUp AI
-                </h1>
-              <button
-                type="button"
-                className="text-white hover:text-gray-200"
-                onClick={() => setSidebarOpen(false)}
-              >
-                <X className="h-6 w-6" aria-hidden="true" />
-              </button>
+      {/* Static sidebar for desktop */}
+      <div className="hidden lg:flex lg:flex-shrink-0">
+        <div className="flex flex-col w-64 bg-indigo-800 rounded-r-xl shadow-2xl">
+          <div className="flex-1 flex flex-col pt-5 pb-4 overflow-y-auto">
+            <div className="flex items-center flex-shrink-0 px-4">
+              <Zap className="h-8 w-8 text-white" />
+              <span className="text-2xl font-extrabold text-white ml-2 tracking-wide">Warmup AI</span>
             </div>
-            <nav className="flex-1 flex flex-col p-4 space-y-2">
+            <nav className="mt-6 flex-1 px-4 space-y-1">
               {navigation.map((item) => (
-                <NavLink
-                  key={item.name}
-                  name={item.name}
-                  href={item.href}
-                  icon={item.icon}
-                  isCurrent={currentPage === item.href}
-                  onClick={() => { setCurrentPage(item.href); setSidebarOpen(false); }}
-                />
+                <NavLink key={item.name} item={item} />
               ))}
-              <div className="pt-4 border-t border-gray-200">
-                 <NavLink
-                    name="Log Out"
-                    href="#"
-                    icon={LogOut}
-                    isCurrent={false}
-                    onClick={() => { logout(); setSidebarOpen(false); }}
-                />
-              </div>
             </nav>
           </div>
-        </div>
-      )}
-
-      {/* Main content area */}
-      <div className="flex-1 max-w-full overflow-x-hidden">
-        <header className="flex items-center justify-between h-20 bg-white border-b border-gray-200 px-4 shadow-sm lg:px-6">
-          <button
-            type="button"
-            className="text-gray-500 hover:text-gray-900 lg:hidden"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu className="h-6 w-6" aria-hidden="true" />
-          </button>
-          <h2 className="text-xl font-semibold text-gray-900">
-            {navigation.find(n => n.href === currentPage)?.name}
-          </h2>
-          <div className="flex items-center space-x-4">
-             <div className="flex items-center text-sm font-medium text-gray-700">
-                <User className="h-5 w-5 text-blue-500 mr-2" />
-                Welcome, {userId ? 'User' : 'Guest'}
+          <div className="flex-shrink-0 flex border-t border-indigo-700 p-4">
+            <div className="flex items-center w-full">
+              <div className="flex-shrink-0 h-10 w-10 bg-indigo-900 rounded-full flex items-center justify-center">
+                <User className="h-6 w-6 text-indigo-300" />
+              </div>
+              <div className="ml-3 truncate">
+                <p className="text-sm font-medium text-white truncate">User ID: {userId}</p>
+                <button onClick={logout} className="text-xs font-medium text-indigo-200 hover:text-white transition">
+                  <LogOut className="h-4 w-4 inline mr-1" /> Sign Out
+                </button>
+              </div>
             </div>
           </div>
-        </header>
+        </div>
+      </div>
 
-        <main className="p-4 sm:p-6 lg:p-8">
-          {children}
+      <div className="flex flex-col w-0 flex-1 overflow-hidden">
+        <div className="lg:hidden pl-1 pt-1 sm:pl-3 sm:pt-3">
+          <button
+            className="-ml-0.5 -mt-0.5 h-12 w-12 inline-flex items-center justify-center rounded-md text-gray-500 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <span className="sr-only">Open sidebar</span>
+            <Menu className="h-6 w-6" aria-hidden="true" />
+          </button>
+        </div>
+        <main className="flex-1 relative overflow-y-auto focus:outline-none bg-gray-50">
+          <div className="py-6">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              {children}
+            </div>
+          </div>
         </main>
       </div>
     </div>
   );
 };
 
-// --- PAGE COMPONENTS ---
-
-const DashboardPage = () => {
-  const { userId, db } = useAuth();
-  const [accounts, setAccounts] = useState<EmailAccount[]>([]);
-
-  useEffect(() => {
-    if (!db || !userId) return;
-
-    const accountCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'emailAccounts');
-    const q = query(accountCollectionRef);
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedAccounts = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        lastConnected: doc.data().lastConnected?.toDate ? doc.data().lastConnected.toDate() : new Date(doc.data().lastConnected || 0),
-      })) as EmailAccount[];
-      setAccounts(fetchedAccounts);
-    }, (error) => {
-      console.error("Error fetching accounts:", error);
-    });
-
-    return () => unsubscribe();
-  }, [db, userId]);
-
-  const totalActive = accounts.filter(a => a.status === 'Active').length;
-  const totalSent = accounts.reduce((sum, a) => sum + a.sentCount, 0);
-  const totalReceived = accounts.reduce((sum, a) => sum + a.receivedCount, 0);
-
-  const StatCard = ({ title, value, colorClass, icon: Icon }) => (
-    <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100 transition-transform transform hover:scale-[1.02]">
-      <div className="flex items-center">
-        <div className={`flex-shrink-0 p-3 rounded-full ${colorClass} bg-opacity-20`}>
-          <Icon className={`h-6 w-6 ${colorClass}`} />
-        </div>
-        <div className="ml-5">
-          <h3 className="text-sm font-medium text-gray-500 truncate">{title}</h3>
-          <p className="mt-1 text-3xl font-bold text-gray-900">{value}</p>
-        </div>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-8">
-      <h1 className="text-3xl font-bold text-gray-800">Deliverability Dashboard</h1>
-      
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard 
-          title="Total Accounts" 
-          value={accounts.length} 
-          colorClass="text-blue-600" 
-          icon={Mail} 
-        />
-        <StatCard 
-          title="Active Warmup" 
-          value={totalActive} 
-          colorClass="text-green-600" 
-          icon={Activity} 
-        />
-        <StatCard 
-          title="Total Sent (Warmup)" 
-          value={totalSent} 
-          colorClass="text-purple-600" 
-          icon={Zap} 
-        />
-        <StatCard 
-          title="Total Replies/Engaged" 
-          value={totalReceived} 
-          colorClass="text-yellow-600" 
-          icon={Home} 
-        />
-      </div>
-
-      {/* Account Performance Table */}
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <h2 className="text-2xl font-semibold text-gray-800 p-6 border-b">Account Performance</h2>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email Address</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sent</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Received</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Connected</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {accounts.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-4 text-center text-gray-500">
-                    No accounts connected yet. Go to Email Management to add one!
-                  </td>
-                </tr>
-              ) : (
-                accounts.map((account) => (
-                  <tr key={account.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{account.email}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-3 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        account.status === 'Active' ? 'bg-green-100 text-green-800' :
-                        account.status === 'Connecting' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
-                        {account.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{account.sentCount}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{account.receivedCount}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {account.lastConnected.toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const EmailManagementPage = () => {
-  const { userId, db } = useAuth();
-  const [apiURL, setApiURL] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [message, setMessage] = useState({ text: '', type: '' });
-  const [accounts, setAccounts] = useState<EmailAccount[]>([]);
-
-  // 1. Fetch Accounts from Firestore
-  useEffect(() => {
-    if (!db || !userId) return;
-
-    const accountCollectionRef = collection(db, 'artifacts', appId, 'users', userId, 'emailAccounts');
-    const q = query(accountCollectionRef, orderBy('lastConnected', 'desc'));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedAccounts = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        lastConnected: doc.data().lastConnected?.toDate ? doc.data().lastConnected.toDate() : new Date(doc.data().lastConnected || 0),
-      })) as EmailAccount[];
-      setAccounts(fetchedAccounts);
-    }, (error) => {
-      console.error("Error fetching accounts:", error);
-    });
-
-    return () => unsubscribe();
-  }, [db, userId]);
-
-
-  // 2. Handle Connection via Deployed Backend API
-  const handleConnect = async (e) => {
-    e.preventDefault();
-    if (!apiURL || !email || !password || !userId || !db) {
-        setMessage({ text: 'Please ensure API URL, Email, and Password are filled out.', type: 'error' });
-        return;
-    }
-    
-    setIsConnecting(true);
-    setMessage({ text: 'Attempting connection via Render API...', type: 'info' });
-
-    // 2a. Attempt to call the Render API
-    try {
-        const response = await fetch(`${apiURL}/api/emails/connect`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, userId }),
-        });
-
-        const data = await response.json();
-
-        if (response.ok && data.success) {
-            
-            // 2b. API Success: Save the returned data to Firestore
-            // We use the email address itself as the document ID for simplicity
-            const docRef = doc(db, 'artifacts', appId, 'users', userId, 'emailAccounts', email);
-            
-            await setDoc(docRef, {
-                email: data.account.email,
-                status: 'Active',
-                sentCount: data.account.sentCount,
-                receivedCount: data.account.receivedCount,
-                lastConnected: new Date(),
-                // NOTE: Password is NOT stored here, only in the secure backend service.
-            });
-
-            setMessage({ text: data.message, type: 'success' });
-            setEmail('');
-            setPassword('');
-
-        } else {
-            // API Error (e.g., failed credential verification)
-            setMessage({ text: data.message || 'Connection failed: Backend error.', type: 'error' });
-        }
-
-    } catch (error) {
-        console.error("Fetch Error:", error);
-        setMessage({ text: `Failed to reach API at ${apiURL}. Check the URL and server logs.`, type: 'error' });
-    } finally {
-        setIsConnecting(false);
-    }
-  };
-
-  // Helper for deleting an account (Optional: Requires security rules update)
-  const handleDelete = async (accountId) => {
-      if (!db || !userId) return;
-      if (window.confirm(`Are you sure you want to disconnect ${accountId}?`)) {
-          try {
-              // This is commented out because Firestore security rules prevent deletes by default.
-              // To enable deletion, you'd need the deleteDoc function and appropriate rules.
-              // deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'emailAccounts', accountId)); 
-              setMessage({ text: `${accountId} disconnected (simulated, deletion disabled in UI).`, type: 'info' });
-          } catch(e) {
-              console.error("Delete failed:", e);
-              setMessage({ text: "Failed to delete account.", type: 'error' });
-          }
-      }
-  };
-
-
-  const MessageAlert = ({ text, type }) => {
-    if (!text) return null;
-    let style = "bg-blue-100 text-blue-800 border-blue-400"; // info
-    if (type === 'success') style = "bg-green-100 text-green-800 border-green-400";
-    if (type === 'error') style = "bg-red-100 text-red-800 border-red-400";
-
-    return (
-        <div className={`mt-4 p-4 text-sm border-l-4 rounded-xl font-medium ${style}`}>
-            {text}
-        </div>
-    );
-  };
-
-  return (
-    <div className="space-y-8">
-      <h1 className="text-3xl font-bold text-gray-800">Email Account Management</h1>
-      
-      {/* API Configuration */}
-      <div className="bg-white p-6 rounded-xl shadow-lg border border-blue-200">
-        <h2 className="text-xl font-semibold text-blue-700 flex items-center mb-4">
-            <Zap className="h-5 w-5 mr-2" />
-            Warmup Service Configuration
-        </h2>
-        <p className="text-sm text-gray-600 mb-4 flex items-start">
-            <Info className="h-5 w-5 mr-2 text-blue-500 flex-shrink-0" />
-            Your Render.com backend service must be running at this URL to connect new accounts.
-        </p>
-        <label htmlFor="api-url" className="block text-sm font-medium text-gray-700 mb-2">
-            Backend API URL (e.g., https://your-app.onrender.com)
-        </label>
-        <input
-            id="api-url"
-            type="url"
-            value={apiURL}
-            onChange={(e) => setApiURL(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm"
-            placeholder="Paste your Render URL here"
-        />
-      </div>
-
-      {/* Account Connection Form */}
-      <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
-        <h2 className="text-2xl font-semibold text-gray-800 mb-4">Connect New Email Account</h2>
-        <form onSubmit={handleConnect} className="space-y-4">
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">Email Address</label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="mt-1 w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              placeholder="e.g., mywarmup@gmail.com"
-            />
-          </div>
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">App Password / SMTP Password</label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="mt-1 w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Your email account password or app-specific password"
-            />
-            <p className="text-xs text-gray-500 mt-1">Note: In a real app, this is sent securely to your Render backend.</p>
-          </div>
-          
-          <button
-            type="submit"
-            disabled={isConnecting}
-            className={`w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white transition-colors ${
-                isConnecting ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
-            }`}
-          >
-            {isConnecting ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Connecting...
-                </>
-            ) : 'Connect Account via API'}
-          </button>
-          
-          <MessageAlert text={message.text} type={message.type} />
-        </form>
-      </div>
-      
-      {/* Existing Accounts List */}
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden mt-8">
-        <h2 className="text-2xl font-semibold text-gray-800 p-6 border-b">Existing Warmup Accounts ({accounts.length})</h2>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email Address</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Sync</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {accounts.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
-                    No accounts found. Use the form above to connect one.
-                  </td>
-                </tr>
-              ) : (
-                accounts.map((account) => (
-                  <tr key={account.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{account.email}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-3 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        account.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {account.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {account.lastConnected.toLocaleTimeString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <button
-                            onClick={() => handleDelete(account.id)}
-                            className="text-red-600 hover:text-red-900 transition-colors"
-                        >
-                            Disconnect
-                        </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-
-const WarmupControlPage = () => (
-    <div className="space-y-8">
-      <h1 className="text-3xl font-bold text-gray-800">Warmup Control & Settings</h1>
-      <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100 space-y-6">
-        <p className="text-gray-600">
-            This section would contain the detailed settings for controlling the email sending ramp-up (e.g., daily volume limit, max sent emails, reply rate simulation, etc.). Since the core logic is handled by your <strong className="text-blue-600">Render backend</strong>, the controls here would communicate with a <code className="bg-gray-100 p-1 rounded">/api/warmup/settings</code> endpoint.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Daily Limit */}
-            <div className="space-y-1">
-                <label className="block text-sm font-medium text-gray-700">Daily Volume Limit (per account)</label>
-                <input type="number" defaultValue={50} className="w-full p-3 border border-gray-300 rounded-lg shadow-sm" />
-                <p className="text-xs text-gray-500">How many warm-up emails to send max per day.</p>
-            </div>
-            
-            {/* Ramp-up Rate */}
-            <div className="space-y-1">
-                <label className="block text-sm font-medium text-gray-700">Daily Increase Percentage</label>
-                <input type="number" defaultValue={10} className="w-full p-3 border border-gray-300 rounded-lg shadow-sm" />
-                <p className="text-xs text-gray-500">Increase volume by this % each day (e.g., 10%).</p>
-            </div>
-
-            {/* Target Reply Rate */}
-            <div className="space-y-1">
-                <label className="block text-sm font-medium text-gray-700">Target Reply Rate (%)</label>
-                <input type="number" defaultValue={30} className="w-full p-3 border border-gray-300 rounded-lg shadow-sm" />
-                <p className="text-xs text-gray-500">Target percentage of emails that receive a reply/engagement.</p>
-            </div>
-            
-            {/* Template Selection */}
-            <div className="space-y-1">
-                 <label className="block text-sm font-medium text-gray-700">Warmup Content Profile</label>
-                <select className="w-full p-3 border border-gray-300 rounded-lg shadow-sm">
-                    <option>Standard Conversation (Simulated)</option>
-                    <option>Industry Specific (Simulated)</option>
-                </select>
-                <p className="text-xs text-gray-500">Type of email content used in the warmup network.</p>
-            </div>
-        </div>
-
-        <button 
-            onClick={() => alert('Settings updated (simulated). This would send data to your Render API.')}
-            className="w-full py-3 px-4 rounded-xl text-white font-medium bg-blue-600 hover:bg-blue-700 transition-colors"
-        >
-            Save Warmup Settings
-        </button>
-      </div>
-    </div>
-);
-
-
-// --- 4. MAIN APPLICATION COMPONENT ---
-
-const AppContent = () => {
-  const { isAuthReady, logout } = useAuth();
-  const [currentPage, setCurrentPage] = useState('/');
-
-  const navigation = [
-    { name: 'Dashboard', href: '/', icon: Home },
-    { name: 'Email Management', href: '/emails', icon: Mail },
-    { name: 'Warmup Control', href: '/warmup', icon: Activity },
-  ];
+const App = () => {
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const { isAuthReady } = useAuth();
 
   const renderPage = () => {
+    if (!isAuthReady) {
+      return (
+        <div className="flex items-center justify-center h-screen">
+          <Loader2 className="h-8 w-8 animate-spin text-indigo-500 mr-2" />
+          <p className="text-lg text-gray-700">Initializing services...</p>
+        </div>
+      );
+    }
+    
     switch (currentPage) {
-      case '/':
+      case 'dashboard':
         return <DashboardPage />;
-      case '/emails':
+      case 'emails':
         return <EmailManagementPage />;
-      case '/warmup':
+      case 'warmup':
         return <WarmupControlPage />;
       default:
         return <DashboardPage />;
     }
   };
-  
-  // Display a loading state while Firebase Auth initializes
-  if (!isAuthReady) {
-    return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-100">
-            <div className="text-lg text-gray-600 flex items-center">
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Initializing Application...
-            </div>
-        </div>
-    );
-  }
-
 
   return (
-    <Layout 
-      currentPage={currentPage} 
-      setCurrentPage={setCurrentPage} 
-      navigation={navigation} 
-      logout={logout}
-    >
+    <Layout currentPage={currentPage} setCurrentPage={setCurrentPage}>
       {renderPage()}
     </Layout>
   );
 };
 
-// Main Export
-const App = () => {
-    // Check if Firebase is initialized
-    if (!app) {
-        return (
-            <div className="min-h-screen flex items-center justify-center bg-red-50 p-6">
-                <div className="bg-white p-8 rounded-xl shadow-2xl border border-red-300 max-w-md text-center">
-                    <h1 className="text-2xl font-bold text-red-600 mb-4">Configuration Error</h1>
-                    <p className="text-gray-700">
-                        Firebase configuration is missing. This application relies on Firebase for persistent storage and authentication.
-                    </p>
-                    <p className="mt-4 text-sm text-gray-500">
-                        Please ensure the <code className="bg-gray-100 p-1 rounded">__firebase_config</code> and <code className="bg-gray-100 p-1 rounded">__app_id</code> environment variables are correctly provided.
-                    </p>
-                </div>
-            </div>
-        );
-    }
-    
-    // Render the main app wrapped in the AuthProvider
-    return (
-        <AuthProvider>
-            <AppContent />
-        </AuthProvider>
-    );
-}
-
-export default App;
+// --- APPLICATION WRAPPER ---
+// This ensures AuthContext is available to the entire App component
+export default () => (
+    <AuthProvider>
+        <App />
+    </AuthProvider>
+);
