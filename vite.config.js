@@ -5,20 +5,26 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   
-  // FINAL FIX: This tells Vite to load all assets relative to the current folder, 
-  // which resolves the blank page (404 for JS files) error on Render.
+  // FIX 1: Resolves the blank page/asset loading issue on Render
   base: './', 
   
   root: '.', 
   
-  // Ensures the compiler can find .jsx files
+  // FIX 2: Resolves .jsx extension failure
   resolve: {
     extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.node'],
   },
-
+  
+  // FIX 3: Prevents conflicts by making Firebase dependencies external
   build: {
-    outDir: 'dist', 
+    outDir: 'dist',
     rollupOptions: {
+      // Treat firebase libraries as external, preventing bundling conflicts
+      external: [
+        'firebase/app', 
+        'firebase/auth', 
+        'firebase/firestore'
+      ],
       input: {
         main: './index.html', 
       },
